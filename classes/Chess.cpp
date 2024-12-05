@@ -1,11 +1,8 @@
 #include "Chess.h"
+#include <vector>
 
 const int AI_PLAYER = 1;
 const int HUMAN_PLAYER = -1;
-
-bool forceTrueFunc(const int& a){
-    return true;
-}
 
 Chess::Chess()
 {
@@ -34,213 +31,271 @@ Bit* Chess::PieceForPlayer(const int playerNumber, ChessPiece piece)
     return bit;
 }
 
-void Chess::setUpBoard()
-{
+void Chess::setUpBoard() {
     setNumberOfPlayers(2);
     _gameOptions.rowX = 8;
     _gameOptions.rowY = 8;
-    //
-    // we want white to be at the bottom of the screen so we need to reverse the board
-    //
-    char piece[2];
-    piece[1] = 0;
-    for (int y = 0; y < _gameOptions.rowY; y++) {
-        for (int x = 0; x < _gameOptions.rowX; x++) {
-            ImVec2 position((float)(pieceSize * x + pieceSize), (float)(pieceSize * (_gameOptions.rowY - y) + pieceSize));
+
+    // Initialize the grid with squares
+    for (int y = 0; y < _gameOptions.rowY; ++y) {
+        for (int x = 0; x < _gameOptions.rowX; ++x) {
+            ImVec2 position((float)(pieceSize * x + pieceSize), (float)(pieceSize * (7 - y) + pieceSize));
             _grid[y][x].initHolder(position, "boardsquare.png", x, y);
-            _grid[y][x].setGameTag(0);
-            piece[0] = bitToPieceNotation(y,x);
-            _grid[y][x].setNotation(piece);
+            _grid[y][x].setGameTag(0); // Empty square initially
         }
     }
-    //debug
-    //QuickPlacePeice(4,4,King,0);
-    //QuickPlacePeice(4,4,Queen,0);
-    //QuickPlacePeice(4,4,Rook,0);
-    //QuickPlacePeice(4,4,Knight,0);
-    //QuickPlacePeice(4,4,Bishop,0);
-    //QuickPlacePeice(4,4,Pawn,0);
-    //QuickPlacePeice(4,1,Pawn,0);
-    //QuickPlacePeice(3,5,Pawn,1);
-    //QuickPlacePeice(5,5,Pawn,1);
-    //_enpassant = 5;
-    //QuickPlacePeice(3,4,Pawn,1);
-    //QuickPlacePeice(5,4,Pawn,1);
-    //return;
-    // set up pawns for both sides
-    for (int c = 0; c < 2; c++)
-        for (int x = 0; x < _gameOptions.rowX; x++) 
-            QuickPlacePeice(x,1+5*c,Pawn,c);
-    // set up other peices
-    ChessPiece temp[] = {Rook,Knight,Bishop,Queen,King,Bishop,Knight,Rook};
-    for (int c = 0; c < 2; c++)
-        for (int x = 0; x < _gameOptions.rowX; x++) 
-            QuickPlacePeice(x,0+7*c,temp[x],c);
+
+    // Reset bitboards
+    wPieces = 0;
+    bPieces = 0;
+
+    // Use FEN to set up the board
+    std::string initialFEN = "RNBQKBNR/PPPPPPPP/8/8/8/8/pppppppp/rnbqkbnr";
+    populateBoardFromFEN(initialFEN);
+
+    startGame();
 }
 
-void Chess::QuickPlacePeice(int x, int y, ChessPiece type, int color){
-    Bit* bit = PieceForPlayer(color, type);
-    bit->setPosition(_grid[y][x].getPosition());
-    bit->setParent(&_grid[y][x]);
-    bit->setGameTag(type);
+void Chess::populateBoardFromFEN(const std::string& fen) {
+    static const std::unordered_map<char, ChessPiece> pieceMap = {
+        {'p', Pawn}, {'r', Rook}, {'n', Knight}, {'b', Bishop}, {'q', Queen}, {'k', King}
+    };
 
-    _grid[y][x].setBit(bit);
+    int index = 0; // Linear index for the board (0-63)
+    for (char c : fen) {
+        if (c == '/') {
+            continue; // Move to the next row in FEN
+        } else if (isdigit(c)) {
+            index += c - '0'; // Skip empty squares
+        } else {
+            int row = index / 8;
+            int col = index % 8;
+            bool isWhite = isupper(c);
+            ChessPiece piece = pieceMap.at(tolower(c));
+
+            Bit* bit = PieceForPlayer(isWhite ? 0 : 1, piece);
+            bit->setPosition(_grid[row][col].getPosition());
+            bit->setParent(&_grid[row][col]);
+            _grid[row][col].setBit(bit);
+
+            // Set game tag for tracking
+            int gameTag = piece + (isWhite ? 0 : 128);
+            bit->setGameTag(gameTag);
+            _grid[row][col].setGameTag(gameTag);
+
+            // Update the bitboard for white or black pieces
+            uint64_t bitPos = 1ULL << index;
+            if (isWhite) {
+                wPieces |= bitPos;
+            } else {
+                bPieces |= bitPos;
+            }
+            ++index;
+        }
+    }
 }
 
+//
+// about the only thing we need to actually fill out for tic-tac-toe
+//
 bool Chess::actionForEmptyHolder(BitHolder &holder)
 {
     return false;
 }
 
-//I'd personally just use canBitMoveFromTo but this is probably better for organisation
 bool Chess::canBitMoveFrom(Bit &bit, BitHolder &src)
 {
-    if (bit.getOwner() == getCurrentPlayer())
-        return true;
-    else
-        return false;
+    return true;
+}
+bool Chess::canBitMoveFromTo(Bit& bit, BitHolder& src, BitHolder& dst) {
+    ChessSquare* srcSquare = dynamic_cast<ChessSquare*>(&src);
+    ChessSquare* dstSquare = dynamic_cast<ChessSquare*>(&dst);
+
+    if (!srcSquare || !dstSquare) return false; // Ensure proper casting
+
+    int srcX = srcSquare->getColumn();
+    int srcY = srcSquare->getRow();
+    int dstX = dstSquare->getColumn();
+    int dstY = dstSquare->getRow();
+
+    int player = getCurrentPlayer()->playerNumber();
+    int gameTag = bit.gameTag();
+    bool isWhite = gameTag < 128;
+   // uint64_t playerPieces = isWhite ? wPieces : bPieces;
+
+    // Ensure it's the player's turn and piece belongs to them
+    if ((player == 0 && !isWhite) || (player == 1 && isWhite)) return false;
+
+    // Check if the piece can move to the destination
+    std::vector<int> validMoves;
+    switch (gameTag % 128) {
+        case Rook: validMoves = getRookMoves(srcX, srcY, isWhite); break;
+        case Bishop: validMoves = getBishopMoves(srcX, srcY, isWhite); break;
+        case Queen:
+            validMoves = getRookMoves(srcX, srcY, isWhite);
+            {
+                auto bishopMoves = getBishopMoves(srcX, srcY, isWhite);
+                validMoves.insert(validMoves.end(), bishopMoves.begin(), bishopMoves.end());
+            }
+            break;
+        case Pawn: validMoves = getPawnMoves(srcX, srcY, isWhite); break;
+        case Knight: validMoves = getKnightMoves(srcX, srcY, isWhite); break;
+        case King: validMoves = getKingMoves(srcX, srcY, isWhite); break;
+        default: return false;
+    }
+
+    int target = dstY * 8 + dstX;
+    return std::find(validMoves.begin(), validMoves.end(), target) != validMoves.end();
 }
 
-//no bitboards? ;:(
-bool Chess::canBitMoveFromTo(Bit& bit, BitHolder& src, BitHolder& dst)
-{
-    //general colision check
-    int capture = 0;
-    if (!dst.empty()){
-        if (dst.bit()->getOwner() == getCurrentPlayer())
-            return false;
-        capture = 1;
-    }
-    //turn number to color
-    int c = getCurrentTurnNo()%2;
-    //find info on current peice
-    int sX = 0;
-    int sY = 0;
-    for (int x = 0; x < 8; x ++)
-        for (int y = 0; y < 8; y ++)
-            if (&_grid[y][x] == &src){
-                sX = x;
-                sY = y;
-            }
-    int type = bit.gameTag();
-    
-    //Pawn movement
-    if (type == Pawn){
-        //normal
-        if (&dst == &_grid[sY+1-c*2][sX])
-            return dst.empty();
-        //double
-        if (&dst == &_grid[sY+2-c*4][sX])
-            return (sY == 6 || sY == 1) && dst.empty();
-        //capture
-        for (int i = -1; i < 2; i += 2)
-            if (&dst == &_grid[sY+1-c*2][sX+i])
-                return capture || _enpassant == sX+i;
-    //Knight movement
-    }else if (type == Knight){
-        for (int x = -2; x < 3; x ++){
-            if (sX+x < 0 || sX+x > 7 || x == 0)
-                continue;
-            for (int i = -1; i < 2; i += 2){
-                int y = (3-abs(x))*i;
-                if (sY+y < 0 || sY+y > 7)
-                    continue;
-                if (&dst == &_grid[sY+y][sX+x])
-                    return true;
+void Chess::bitMovedFromTo(Bit &bit, BitHolder &src, BitHolder &dst) {
+    int pieceTag = (bit.gameTag() > 128) ? bit.gameTag() - 128 : bit.gameTag();  // Adjust for black pieces
+    ChessSquare* srcSquare = dynamic_cast<ChessSquare*>(&src);
+    ChessSquare* dstSquare = dynamic_cast<ChessSquare*>(&dst);
+
+    int x = srcSquare->getColumn();
+    int y = srcSquare->getRow();
+    int total = (8 * y) + x;
+
+    int x2 = dstSquare->getColumn();
+    int y2 = dstSquare->getRow();
+    int total2 = (8 * y2) + x2;
+
+    // Update grid and bitboard for the source and destination
+    _grid[y][x].setGameTag(0);  // Clear the source square
+    _grid[y2][x2].setGameTag(bit.gameTag());  // Set the destination square
+
+    // Update bitboards
+    updatePieces(wPieces, 0);
+    updatePieces(bPieces, 1);
+
+    // Additional functionality can be added here if needed
+
+    endTurn();  // Signal end of turn
+}
+
+void Chess::updatePieces(uint64_t& pieces, bool forWhite) {
+    pieces = 0; // Clear current bitboard
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 0; x < 8; ++x) {
+            int gameTag = _grid[y][x].gameTag();
+            bool isPieceWhite = (gameTag > 0 && gameTag < 128);
+            if ((forWhite && isPieceWhite) || (!forWhite && gameTag > 128)) {
+                uint64_t bitPosition = 1ULL << (y * 8 + x);
+                pieces |= bitPosition; // Add piece position to bitboard
             }
         }
-    //King, Queen, Rook, and Bishop Movement
-    }else
-        if (bitFromToHelper(sX,sY,type,dst))
-            return true;
-    //Castling
-    if (sX != 4 || type != King)
-        return false;
-    if ((&dst == &_grid[sY][sX+2] && _castleRights & 0b0001<<2*c && _grid[sY][sX+1].empty()) ||
-        (&dst == &_grid[sY][sX-2] && _castleRights & 0b0010<<2*c && _grid[sY][sX-1].empty()))
-        return true;
-    return false;
+    }
 }
 
-bool Chess::bitFromToHelper(int sX, int sY, int type, BitHolder& dst){
-    for (int x = -1; x < 2; x ++){
-        for (int y = -1; y < 2; y ++){
-            if ((!y && !x) || (type == Rook && x && y) || (type == Bishop && !(x && y)))
-                continue;
-            int i = 1;
-            while (sY+y*i < 8 && sY+y*i > -1 && sX+x*i < 8 && sX+x*i > -1){
-                if (&dst == &_grid[sY+y*i][sX+x*i])
-                    return true;
-                if ((!_grid[sY+y*i][sX+x*i].empty()) || type == King)
-                    break;
-                i ++;
+std::vector<int> Chess::getRookMoves(int x, int y, bool isWhite) {
+    std::vector<int> moves;
+    int dx[] = {1, -1, 0, 0}; // Directions for rook (horizontal and vertical)
+    int dy[] = {0, 0, 1, -1};
+
+    for (int dir = 0; dir < 4; ++dir) {
+        int nx = x, ny = y;
+        while (true) {
+            nx += dx[dir];
+            ny += dy[dir];
+
+            if (nx < 0 || nx >= 8 || ny < 0 || ny >= 8) break; // Out of bounds
+
+            Bit* bit = _grid[ny][nx].bit();
+            if (bit) {
+                if ((bit->gameTag() < 128) != isWhite) moves.push_back(ny * 8 + nx); // Enemy piece
+                break; // Blocked
+            }
+            moves.push_back(ny * 8 + nx); // Empty square
+        }
+    }
+    return moves;
+}
+std::vector<int> Chess::getBishopMoves(int x, int y, bool isWhite) {
+    std::vector<int> moves;
+    int dx[] = {1, 1, -1, -1}; // Directions for bishop (diagonals)
+    int dy[] = {1, -1, 1, -1};
+
+    for (int dir = 0; dir < 4; ++dir) {
+        int nx = x, ny = y;
+        while (true) {
+            nx += dx[dir];
+            ny += dy[dir];
+
+            if (nx < 0 || nx >= 8 || ny < 0 || ny >= 8) break; // Out of bounds
+
+            Bit* bit = _grid[ny][nx].bit();
+            if (bit) {
+                if ((bit->gameTag() < 128) != isWhite) moves.push_back(ny * 8 + nx); // Enemy piece
+                break; // Blocked
+            }
+            moves.push_back(ny * 8 + nx); // Empty square
+        }
+    }
+    return moves;
+}
+std::vector<int> Chess::getKnightMoves(int x, int y, bool isWhite) {
+    std::vector<int> moves;
+    int dx[] = {2, 2, -2, -2, 1, -1, 1, -1}; // Knight jumps
+    int dy[] = {1, -1, 1, -1, 2, 2, -2, -2};
+
+    for (int i = 0; i < 8; ++i) {
+        int nx = x + dx[i];
+        int ny = y + dy[i];
+
+        if (nx < 0 || nx >= 8 || ny < 0 || ny >= 8) continue; // Out of bounds
+
+        Bit* bit = _grid[ny][nx].bit();
+        if (!bit || (bit->gameTag() < 128) != isWhite) moves.push_back(ny * 8 + nx); // Empty or enemy
+    }
+    return moves;
+}
+std::vector<int> Chess::getPawnMoves(int x, int y, bool isWhite) {
+    std::vector<int> moves;
+    int forward = isWhite ? 1 : -1; // White moves down (+1), Black moves up (-1)
+
+    // Single forward move
+    if (y + forward >= 0 && y + forward < 8 && !_grid[y + forward][x].bit()) {
+        moves.push_back((y + forward) * 8 + x);
+    }
+
+    // Double forward move (only on initial rank)
+    if ((isWhite && y == 1) || (!isWhite && y == 6)) {
+        if (!_grid[y + forward][x].bit() && !_grid[y + 2 * forward][x].bit()) {
+            moves.push_back((y + 2 * forward) * 8 + x);
+        }
+    }
+
+    // Diagonal captures
+    for (int dx : {-1, 1}) { // Check diagonals
+        int nx = x + dx;
+        int ny = y + forward;
+        if (nx >= 0 && nx < 8 && ny >= 0 && ny < 8) {
+            Bit* bit = _grid[ny][nx].bit();
+            if (bit && (bit->gameTag() < 128) != isWhite) { // Enemy piece
+                moves.push_back(ny * 8 + nx);
             }
         }
     }
-    return false;
-}
 
-void Chess::bitMovedFromTo(Bit &bit, BitHolder &src, BitHolder &dst) 
-{
-    bool c = getCurrentTurnNo()%2;
-    int type = bit.gameTag();
-    int sX = 0;
-    int sY = 0;
-    for (int x = 0; x < 8; x ++)
-        for (int y = 0; y < 8; y ++)
-            if (&_grid[y][x] == &src){
-                sX = x;
-                sY = y;
-            }
-    switch (type){
-        case King:
-            _castleRights &= 0b1100 >> 2*c;
-            for (int i = -1; i < 2; i += 2)
-                if ((&_grid[sY][4+i*2] == &dst)){
-                    QuickPlacePeice(4+i,sY,Rook,c);
-                    _grid[sY][7*(i==1)].setBit(nullptr);
-                }
-            _enpassant = -1;
-        break;
-        case Rook:
-            _castleRights &= (0b0001 << (2*c + (sX==0))) ^ 0b1111;
-            _enpassant = -1;
-        break;
-        case Pawn:
-            for (int i = -1; i < 2; i += 2)
-                if (sX+i == _enpassant && sY == 4 - c)
-                    _grid[sY][sX+i].setBit(nullptr);
-            if (sY == (1 + 5*c) && &dst == &_grid[(3 + c)][sX])
-                _enpassant = sX;
-            else
-                _enpassant = -1;
-        break;
-        default:
-            _enpassant = -1;
-        break;
+    return moves;
+}
+std::vector<int> Chess::getKingMoves(int x, int y, bool isWhite) {
+    std::vector<int> moves;
+    int dx[] = {1, -1, 0, 0, 1, -1, 1, -1}; // Adjacent squares
+    int dy[] = {0, 0, 1, -1, 1, -1, -1, 1};
+
+    for (int i = 0; i < 8; ++i) {
+        int nx = x + dx[i];
+        int ny = y + dy[i];
+
+        if (nx < 0 || nx >= 8 || ny < 0 || ny >= 8) continue; // Out of bounds
+
+        Bit* bit = _grid[ny][nx].bit();
+        if (!bit || (bit->gameTag() < 128) != isWhite) moves.push_back(ny * 8 + nx); // Empty or enemy
     }
-    endTurn();
+    return moves;
 }
-
-void Chess::generateMoveList()
-{
-    //clear list
-    _moveList.remove_if(forceTrueFunc);
-    //find piece to move
-    for (int x = 0; x < 8; x ++)
-    for (int y = 0; y < 8; y ++){
-        if (_grid[y][x].bit() == nullptr)
-            continue;
-        if (!canBitMoveFrom(*_grid[y][x].bit(),_grid[y][x]))
-            continue;
-        //try to move piece
-        for (int dstX = 0; dstX < 8; dstX ++)
-        for (int dstY = 0; dstY < 8; dstY ++)
-            if (canBitMoveFromTo(*_grid[y][x].bit(),_grid[y][x],_grid[dstY][dstX]))
-                _moveList.push_back(y<<9 | x<<6 | dstY<<3 | dstX);
-    }
-}
-
 //
 // free all the memory used by the game on the heap
 //
